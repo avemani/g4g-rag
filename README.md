@@ -157,7 +157,7 @@ These parameters are corroborated by the top-performing trials (#13, #9, #8, #0)
 
 ## Testing
 
-To run automated unit and integration tests (including health checks and semantic assertions):
+To run automated unit and integration tests:
 ```bash
 cd /g4g-rag
 pytest tests/ -v
