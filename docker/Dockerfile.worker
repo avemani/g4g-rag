@@ -1,0 +1,12 @@
+FROM pytorch/pytorch:2.11.0-cuda12.8-cudnn9-devel
+
+WORKDIR /g4g-rag
+
+RUN apt-get update && apt-get install -y --fix-missing
+
+RUN mkdir initial
+COPY requirements.txt ./initial/requirements.txt
+RUN pip install --no-cache-dir --break-system-packages -r ./initial/requirements.txt
+
+RUN playwright install chromium
+RUN playwright install-deps chromium

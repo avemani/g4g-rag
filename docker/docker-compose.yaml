@@ -1,0 +1,174 @@
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.2-pg16-trixie
+    ports:
+      - 5432:5432
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_ROOT_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_ROOT_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_ROOT_DB}
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+      - ./init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "${POSTGRES_ROOT_USER}"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  pgadmin:
+    image: dpage/pgadmin4:9.14.0
+    ports:
+      - 80:80
+    env_file: .env
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD}
+      PGADMIN_CONFIG_ENHANCED_COOKIE_PROTECTION: "True"
+      PGADMIN_CONFIG_CONSOLE_LOG_LEVEL: 10
+    volumes:
+      - pgadmin-volume:/var/lib/pgadmin
+
+  mongo:
+    image: mongo:8.2
+    restart: always
+    ports:
+      - 27017:27017
+    env_file: .env
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASS}
+      MONGO_INITDB_DATABASE: geekdb
+    volumes:
+      - mongo-db-data-volume:/data/db
+      - mongo-db-config-volume:/data/configdb
+
+  mongo-express:
+    image: mongo-express:1.0.2-20-alpine3.19
+    restart: always
+    ports:
+      - 8081:8081
+    env_file: .env
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://${MONGO_USER}:${MONGO_PASS}@mongo:27017/
+      ME_CONFIG_BASICAUTH_ENABLED: "true"
+      ME_CONFIG_BASICAUTH_USERNAME: ${ME_CONFIG_BASICAUTH_USERNAME}
+      ME_CONFIG_BASICAUTH_PASSWORD: ${ME_CONFIG_BASICAUTH_PASSWORD}
+
+  ollama-ai:
+    build:
+      dockerfile: Dockerfile.ollama
+    container_name: ollama-service
+    ports:
+      - 11434:11434
+    volumes:
+      - ollama-volume:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      - OLLAMA_KEEP_ALIVE=-1
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  rag-worker:
+    image: rag-worker:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    env_file: .env
+    ports:
+      - 8501:8501
+      - 8000:8000
+    tty: true
+    stdin_open: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - OLLAMA_BASE_URL=http://ollama-ai:11434
+      - LITELLM_BASE_URL=http://litellm:4000/v1
+      - LITELLM_API_KEY=${LITELLM_API_KEY}
+    volumes:
+      - hf-cache-volume:/root/.cache/huggingface
+      - ${WORKER_PATH}:/g4g-rag
+    depends_on:
+      - ollama-ai
+
+  redis:
+    image: redis/redis-stack-server:7.2.0-v13
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
+    environment:
+      - REDIS_ARGS=--maxmemory 500mb --maxmemory-policy allkeys-lru --tcp-keepalive 60 --timeout 0
+    volumes:
+      - redis-volume:/data
+
+  litellm:
+    image: ghcr.io/berriai/litellm-database:main-stable
+    ports:
+      - 4000:4000
+    env_file: .env
+    environment:
+      DATABASE_URL: "postgresql://${LLMDB_USER}:${LLMDB_PASS}@postgres:5432/litellm"
+      REDIS_HOST: "redis"
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ""
+      LITELLM_MASTER_KEY: ${LITELLM_API_KEY}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      OLLAMA_API_BASE: "http://ollama-ai:11434"
+      OLLAMA_API_KEY: "ollama-api-key"
+    volumes:
+      - ./litellm_config.yaml:/app/config.yaml
+    command: ["--config", "/app/config.yaml"]
+    depends_on:
+      - postgres
+      - redis
+
+  mlflow-server:
+    build:
+      dockerfile: Dockerfile.mlflow
+    ports:
+      - 5000:5000
+    env_file: .env
+    command: >
+      mlflow server 
+      --host 0.0.0.0 
+      --port 5000 
+      --backend-store-uri postgresql://${MLFLOW_USER_DB}:${MLFLOW_PASSWORD_DB}@postgres:5432/mlflow
+      --default-artifact-root /data/artifacts 
+      --allowed-hosts mlflow-server,mlflow-server:5000,localhost:5000,127.0.0.1:5000
+    environment:
+      - MLFLOW_HTTP_TRUSTED_HOSTS=*
+    volumes:
+      - mlflow-volume:/data
+    depends_on:
+      - postgres
+
+volumes:
+  postgres-db-volume:
+  mongo-db-data-volume:
+  mongo-db-config-volume:
+  redis-volume:
+  pgadmin-volume:
+  hf-cache-volume:
+  ollama-volume:
+  mlflow-volume:
